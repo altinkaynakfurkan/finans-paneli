@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from ta.trend import SMAIndicator
 from ta.momentum import RSIIndicator
+import requests
 
 st.set_page_config(page_title="Finans & Yatırım Analiz Paneli", layout="wide")
 
@@ -99,12 +100,25 @@ def load_clean_data(ticker, p):
                 df[col] = df['Close']
     return df
 
-# Temel Analiz Bilgilerini Çekme Fonksiyonu
-@st.cache_data(ttl=600)
+# Bulut Engelini Aşan Güvenli Temel Analiz Motoru
+@st.cache_data(ttl=900)
 def get_fundamental_data(ticker_symbol):
     try:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        })
+        t = yf.Ticker(ticker_symbol, session=session)
+        info = t.info
+        if info and len(info) > 5:
+            return info
+    except Exception:
+        pass
+    
+    # Fallback (Yedek Hızlı Çekim)
+    try:
         t = yf.Ticker(ticker_symbol)
-        return t.info
+        return t.fast_info
     except Exception:
         return {}
 
@@ -196,28 +210,35 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     with st.spinner("Şirket verileri toplanıyor..."):
         for name, ticker in STOCKS_ONLY.items():
             info = get_fundamental_data(ticker)
-            if info:
-                p_cur = info.get("currentPrice", info.get("regularMarketPrice", None))
-                pe = info.get("trailingPE", None)
-                pb = info.get("priceToBook", None)
-                roe = info.get("returnOnEquity", None)
-                margin = info.get("profitMargins", None)
-                div_yield = info.get("dividendYield", None)
-                h52 = info.get("fiftyTwoWeekHigh", None)
+            
+            # Değerleri esnek çek (dict veya fast_info uyumlu)
+            p_cur = getattr(info, 'last_price', None) if not isinstance(info, dict) else info.get("currentPrice", info.get("regularMarketPrice", None))
+            pe = info.get("trailingPE", None) if isinstance(info, dict) else None
+            pb = info.get("priceToBook", None) if isinstance(info, dict) else None
+            roe = info.get("returnOnEquity", None) if isinstance(info, dict) else None
+            margin = info.get("profitMargins", None) if isinstance(info, dict) else None
+            div_yield = info.get("dividendYield", None) if isinstance(info, dict) else None
+            h52 = getattr(info, 'year_high', None) if not isinstance(info, dict) else info.get("fiftyTwoWeekHigh", None)
 
-                zirve_fark = ((p_cur - h52) / h52 * 100) if (p_cur and h52) else None
+            # Fiyat fallback
+            if not p_cur:
+                df_temp = load_clean_data(ticker, "5d")
+                if not df_temp.empty:
+                    p_cur = float(df_temp['Close'].iloc[-1])
 
-                summary_rows.append({
-                    "Hisse": name.split(" ")[0],
-                    "Şirket": name.split("(")[1].replace(")", ""),
-                    "Son Fiyat (TL)": f"{p_cur:.2f}" if p_cur else "-",
-                    "F/K": f"{pe:.2f}" if pe else "-",
-                    "PD/DD": f"{pb:.2f}" if pb else "-",
-                    "Özsermaye Kârı (ROE)": f"%{roe*100:.1f}" if roe else "-",
-                    "Net Kâr Marjı": f"%{margin*100:.1f}" if margin else "-",
-                    "Temettü Verimi": f"%{div_yield*100:.2f}" if div_yield else "%0.00",
-                    "Zirveye Uzaklık": f"%{zirve_fark:.1f}" if zirve_fark else "-"
-                })
+            zirve_fark = ((p_cur - h52) / h52 * 100) if (p_cur and h52) else None
+
+            summary_rows.append({
+                "Hisse": name.split(" ")[0],
+                "Şirket": name.split("(")[1].replace(")", ""),
+                "Son Fiyat (TL)": f"{p_cur:.2f}" if p_cur else "-",
+                "F/K": f"{pe:.2f}" if pe else "-",
+                "PD/DD": f"{pb:.2f}" if pb else "-",
+                "Özsermaye Kârı (ROE)": f"%{roe*100:.1f}" if roe else "-",
+                "Net Kâr Marjı": f"%{margin*100:.1f}" if margin else "-",
+                "Temettü Verimi": f"%{div_yield*100:.2f}" if div_yield else "%0.00",
+                "Zirveye Uzaklık": f"%{zirve_fark:.1f}" if zirve_fark else "-"
+            })
 
     if summary_rows:
         df_summary = pd.DataFrame(summary_rows)
@@ -354,10 +375,10 @@ else:
                     # 1. Satır: Değerleme Çarpanları
                     st.markdown("##### 1. Değerleme ve Çarpanlar")
                     k1, k2, k3, k4 = st.columns(4)
-                    pe = info.get("trailingPE", None)
-                    fwd_pe = info.get("forwardPE", None)
-                    pb = info.get("priceToBook", None)
-                    div_yield = info.get("dividendYield", None)
+                    pe = info.get("trailingPE", None) if isinstance(info, dict) else None
+                    fwd_pe = info.get("forwardPE", None) if isinstance(info, dict) else None
+                    pb = info.get("priceToBook", None) if isinstance(info, dict) else None
+                    div_yield = info.get("dividendYield", None) if isinstance(info, dict) else None
 
                     k1.metric("F/K (Fiyat/Kazanç)", f"{pe:.2f}" if pe else "N/A", help="İdeal aralık: 5-12. Düşük olması kâra göre ucuzluğu gösterir.")
                     k2.metric("İleri Dönem F/K", f"{fwd_pe:.2f}" if fwd_pe else "N/A", help="Gelecek 1 yıl tahmini kârına göre F/K.")
@@ -369,10 +390,10 @@ else:
                     # 2. Satır: Kârlılık ve Borçluluk
                     st.markdown("##### 2. Kârlılık ve Borçluluk Durumu")
                     b1, b2, b3, b4 = st.columns(4)
-                    roe = info.get("returnOnEquity", None)
-                    profit_margin = info.get("profitMargins", None)
-                    debt_to_equity = info.get("debtToEquity", None)
-                    quick_ratio = info.get("quickRatio", None)
+                    roe = info.get("returnOnEquity", None) if isinstance(info, dict) else None
+                    profit_margin = info.get("profitMargins", None) if isinstance(info, dict) else None
+                    debt_to_equity = info.get("debtToEquity", None) if isinstance(info, dict) else None
+                    quick_ratio = info.get("quickRatio", None) if isinstance(info, dict) else None
 
                     b1.metric("Özsermaye Kârı (ROE)", f"%{roe * 100:.2f}" if roe else "N/A", help="Sermayenin yıllık büyüme gücü. Enflasyonun (%31.75) üstünde olmalı.")
                     b2.metric("Net Kâr Marjı", f"%{profit_margin * 100:.2f}" if profit_margin else "N/A", help="Cironun kâra dönüşme oranı.")
@@ -384,11 +405,11 @@ else:
                     # 3. Satır: Piyasa Büyüklüğü ve Zirve İskonto
                     st.markdown("##### 3. Piyasa Büyüklüğü ve Fiyat İskontosu")
                     p1, p2, p3, p4 = st.columns(4)
-                    market_cap = info.get("marketCap", 0)
+                    market_cap = getattr(info, 'market_cap', 0) if not isinstance(info, dict) else info.get("marketCap", 0)
                     market_cap_bil = market_cap / 1_000_000_000 if market_cap else 0
-                    high_52 = info.get("fiftyTwoWeekHigh", 0)
-                    low_52 = info.get("fiftyTwoWeekLow", 0)
-                    current_p = info.get("currentPrice", last_close if 'last_close' in locals() else 0)
+                    high_52 = getattr(info, 'year_high', 0) if not isinstance(info, dict) else info.get("fiftyTwoWeekHigh", 0)
+                    low_52 = getattr(info, 'year_low', 0) if not isinstance(info, dict) else info.get("fiftyTwoWeekLow", 0)
+                    current_p = last_close if 'last_close' in locals() else (getattr(info, 'last_price', 0) if not isinstance(info, dict) else info.get("currentPrice", 0))
                     zirve_uzaklik = ((current_p - high_52) / high_52) * 100 if high_52 else 0
 
                     p1.metric("Piyasa Değeri", f"{market_cap_bil:.2f} Milyar TL")
