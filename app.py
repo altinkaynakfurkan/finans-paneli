@@ -36,7 +36,10 @@ WATCHLIST = {
     # 4. Altın Ons
     "Altın Ons (USD)": {"ticker": "GC=F", "type": "commodity"},
 
-    # 5. Hisseler (A'dan Z'ye Alfabetik)
+    # 5. BIST 100 Endeksi
+    "BIST 100 Endeksi": {"ticker": "XU100.IS", "type": "index"},
+
+    # 6. Hisseler (A'dan Z'ye Alfabetik)
     "ASELS (Aselsan)": {"ticker": "ASELS.IS", "type": "stock"},
     "BIMAS (BİM Mağazalar)": {"ticker": "BIMAS.IS", "type": "stock"},
     "EREGL (Erdemir)": {"ticker": "EREGL.IS", "type": "stock"},
@@ -44,7 +47,7 @@ WATCHLIST = {
     "THYAO (Türk Hava Yolları)": {"ticker": "THYAO.IS", "type": "stock"},
     "VESTL (Vestel Elektronik)": {"ticker": "VESTL.IS", "type": "stock"},
 
-    # 6. Döviz Kurları & Özel Arama
+    # 7. Döviz Kurları & Özel Arama
     "USD/TRY (Dolar Kuru)": {"ticker": "USDTRY=X", "type": "fx"},
     "EUR/TRY (Euro Kuru)": {"ticker": "EURTRY=X", "type": "fx"},
     "Özel Sembol Gir...": {"ticker": "CUSTOM", "type": "custom"}
@@ -135,7 +138,7 @@ if selected_item["type"] in ["katilim_ppf", "sukuk"]:
     * **İşlem Platformu:** TEFAS (Tüm bankalardan alınıp satılabilir).
     """)
 
-# --- B. GRAM ALTIN, HİSSE, DÖVİZ VE EMTİA GÖRÜNÜMÜ ---
+# --- B. BIST 100, GRAM ALTIN, HİSSE, DÖVİZ VE EMTİA GÖRÜNÜMÜ ---
 else:
     with st.spinner("Piyasa verileri yükleniyor..."):
         if selected_item["type"] == "gram_altin":
@@ -178,8 +181,16 @@ else:
 
         # 1. Özet Metrik Kartları
         c1, c2, c3, c4, c5 = st.columns(5)
-        birim = "TL" if "TL" in selected_label or ".IS" in selected_item.get("ticker", "") or selected_item["type"] == "gram_altin" else "$"
-        c1.metric("Son Fiyat", f"{last_close:.2f} {birim}", f"{daily_change:+.2f}% Günlük")
+        
+        # Birim belirleme
+        if selected_item["type"] == "index":
+            birim = "Puan"
+        elif "TL" in selected_label or ".IS" in selected_item.get("ticker", "") or selected_item["type"] == "gram_altin":
+            birim = "TL"
+        else:
+            birim = "$"
+
+        c1.metric("Son Değer", f"{last_close:.2f} {birim}", f"{daily_change:+.2f}% Günlük")
         c2.metric(f"Nominal Getiri ({period})", f"%{period_return:+.2f}")
         c3.metric(f"{ay_sayisi} Aylık Enflasyon", f"%{donem_enf:.2f}")
         
@@ -196,7 +207,7 @@ else:
         fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="Fiyat"))
         fig.add_trace(go.Scatter(x=data.index, y=data['SMA20'], line=dict(color='orange', width=1.5), name="SMA 20"))
         fig.add_trace(go.Scatter(x=data.index, y=data['SMA50'], line=dict(color='blue', width=1.5), name="SMA 50"))
-        fig.update_layout(title=f"{selected_label} Fiyat Hareketi ve Ortalamalar", xaxis_rangeslider_visible=False, height=450)
+        fig.update_layout(title=f"{selected_label} Hareketi ve Ortalamalar", xaxis_rangeslider_visible=False, height=450)
         st.plotly_chart(fig, use_container_width=True)
 
         # 3. RSI Grafiği
