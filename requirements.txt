@@ -1,6 +1,7 @@
 streamlit
-yfinance
 pandas
-ta
 plotly
+ta
 requests
+tefas-crawler
+beautifulsoup4
