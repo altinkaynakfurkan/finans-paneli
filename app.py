@@ -12,23 +12,17 @@ st.title("📊 Finansal Takip, İş Portföy Katılım ve Dönemsel Enflasyon An
 # 1. Yıllık Enflasyon Referansı
 TUIK_YILLIK_ENFLASYON = 31.75  # TÜİK güncel yıllık TÜFE (%)
 
-# 2. Varlık Listesi
+# 2. İstenen Sıralamaya Göre Düzenlenmiş Varlık Listesi
 WATCHLIST = {
-    # BIST Hisseleri
-    "FROTO (Ford Otosan)": {"ticker": "FROTO.IS", "type": "stock"},
-    "VESTL (Vestel Elektronik)": {"ticker": "VESTL.IS", "type": "stock"},
-    "THYAO (Türk Hava Yolları)": {"ticker": "THYAO.IS", "type": "stock"},
-    "ASELS (Aselsan)": {"ticker": "ASELS.IS", "type": "stock"},
-    "EREGL (Erdemir)": {"ticker": "EREGL.IS", "type": "stock"},
-    "BIMAS (BİM Mağazalar)": {"ticker": "BIMAS.IS", "type": "stock"},
-    
-    # Sadece İş Portföy Katılım Fonları
+    # 1. Para Piyasası Fonu
     "KPI - İş Portföy Para Piyasası Katılım (TL) Fonu": {
         "ticker": "KPI", 
         "type": "katilim_ppf", 
         "yillik_getiri": 44.50,
         "fon_adi": "İş Portföy Para Piyasası Katılım (TL) Fonu"
     },
+    
+    # 2. Kira Sertifikaları Fonu
     "IAT - İş Portföy Kira Sertifikaları Katılım (TL) Fonu": {
         "ticker": "IAT", 
         "type": "sukuk", 
@@ -36,10 +30,23 @@ WATCHLIST = {
         "fon_adi": "İş Portföy Kira Sertifikaları Katılım (TL) Fonu"
     },
 
-    # Döviz ve Emtia
+    # 3. Altın Gram
+    "Gram Altın (TL)": {"ticker": "GRAM_ALTIN", "type": "gram_altin"},
+
+    # 4. Altın Ons
+    "Altın Ons (USD)": {"ticker": "GC=F", "type": "commodity"},
+
+    # 5. Hisseler (A'dan Z'ye Alfabetik)
+    "ASELS (Aselsan)": {"ticker": "ASELS.IS", "type": "stock"},
+    "BIMAS (BİM Mağazalar)": {"ticker": "BIMAS.IS", "type": "stock"},
+    "EREGL (Erdemir)": {"ticker": "EREGL.IS", "type": "stock"},
+    "FROTO (Ford Otosan)": {"ticker": "FROTO.IS", "type": "stock"},
+    "THYAO (Türk Hava Yolları)": {"ticker": "THYAO.IS", "type": "stock"},
+    "VESTL (Vestel Elektronik)": {"ticker": "VESTL.IS", "type": "stock"},
+
+    # 6. Döviz Kurları & Özel Arama
     "USD/TRY (Dolar Kuru)": {"ticker": "USDTRY=X", "type": "fx"},
     "EUR/TRY (Euro Kuru)": {"ticker": "EURTRY=X", "type": "fx"},
-    "Altın Ons (USD)": {"ticker": "GC=F", "type": "commodity"},
     "Özel Sembol Gir...": {"ticker": "CUSTOM", "type": "custom"}
 }
 
@@ -80,6 +87,31 @@ st.sidebar.metric(
 )
 st.sidebar.caption(f"Yıllık %{yillik_enf:.2f} referansına göre {ay_sayisi} aylık bileşik TÜFE karşılığı.")
 
+# Temiz Veri Çekme Motoru
+@st.cache_data(ttl=300)
+def load_clean_data(ticker, p):
+    df = pd.DataFrame()
+    try:
+        df = yf.download(ticker, period=p, interval="1d", auto_adjust=True, progress=False)
+    except Exception:
+        pass
+
+    if df.empty or len(df) < 2:
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=p, interval="1d", auto_adjust=True)
+        except Exception:
+            pass
+
+    if not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] for col in df.columns]
+        df = df.dropna(subset=['Close'])
+        for col in ['Open', 'High', 'Low']:
+            if col not in df.columns:
+                df[col] = df['Close']
+    return df
+
 # --- A. İŞ PORTFÖY KATILIM FONLARI ---
 if selected_item["type"] in ["katilim_ppf", "sukuk"]:
     st.subheader(f"🏷️ {selected_label}")
@@ -90,8 +122,6 @@ if selected_item["type"] in ["katilim_ppf", "sukuk"]:
     c1.metric("Fon Kodu", selected_item["ticker"])
     c2.metric("Yıllık Getiri", f"%{fon_yillik:.2f}")
     c3.metric("Yıllık Enflasyon", f"%{yillik_enf:.2f}")
-    
-    # Renk Kodlaması: Artıysa yeşil yukarı ok, eksiyse kırmızı aşağı ok
     c4.metric(
         label="Yıllık Reel Getiri",
         value=f"%{fon_reel_getiri:+.2f}",
@@ -105,37 +135,34 @@ if selected_item["type"] in ["katilim_ppf", "sukuk"]:
     * **İşlem Platformu:** TEFAS (Tüm bankalardan alınıp satılabilir).
     """)
 
-# --- B. HİSSE / DÖVİZ / EMTİA GÖRÜNÜMÜ ---
+# --- B. GRAM ALTIN, HİSSE, DÖVİZ VE EMTİA GÖRÜNÜMÜ ---
 else:
-    if selected_item["ticker"] == "CUSTOM":
-        symbol = st.sidebar.text_input("Sembol Kodu:", value="VESTL.IS").strip().upper()
-    else:
-        symbol = selected_item["ticker"]
-
-    @st.cache_data(ttl=300)
-    def load_clean_data(ticker, p):
-        try:
-            t = yf.Ticker(ticker)
-            df = t.history(period=p, interval="1d")
-            if df.empty:
-                df = yf.download(ticker, period=p, interval="1d", progress=False)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = [col[0] for col in df.columns]
-                df = df.dropna(subset=['Close'])
-            return df
-        except Exception:
-            return pd.DataFrame()
-
     with st.spinner("Piyasa verileri yükleniyor..."):
-        data = load_clean_data(symbol, period)
+        if selected_item["type"] == "gram_altin":
+            df_ons = load_clean_data("GC=F", period)
+            df_usd = load_clean_data("USDTRY=X", period)
+
+            if not df_ons.empty and not df_usd.empty:
+                data = pd.DataFrame(index=df_ons.index.intersection(df_usd.index))
+                for col in ['Open', 'High', 'Low', 'Close']:
+                    data[col] = (df_ons[col] * df_usd[col]) / 31.1035
+                data = data.dropna()
+            else:
+                data = pd.DataFrame()
+        else:
+            if selected_item["ticker"] == "CUSTOM":
+                symbol = st.sidebar.text_input("Sembol Kodu:", value="ASELS.IS").strip().upper()
+            else:
+                symbol = selected_item["ticker"]
+            data = load_clean_data(symbol, period)
 
     if data.empty or len(data) < 2:
-        st.error(f"'{symbol}' için veri çekilemedi. Lütfen bağlantınızı veya sembol kodunu kontrol edin.")
+        st.error(f"Seçilen varlık için canlı veri çekilemedi. Lütfen bağlantınızı kontrol ediniz.")
     else:
+        # İndikatörler
         data['SMA20'] = SMAIndicator(close=data['Close'], window=min(20, len(data))).sma_indicator()
         data['SMA50'] = SMAIndicator(close=data['Close'], window=min(50, len(data))).sma_indicator()
-        data['RSI'] = RSIIndicator(close=data['Close'], window=14).rsi()
+        data['RSI'] = RSIIndicator(close=data['Close'], window=min(14, len(data))).rsi()
 
         start_price = float(data['Close'].iloc[0])
         last_close = float(data['Close'].iloc[-1])
@@ -151,18 +178,16 @@ else:
 
         # 1. Özet Metrik Kartları
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Son Fiyat", f"{last_close:.2f}", f"{daily_change:+.2f}% Günlük")
+        birim = "TL" if "TL" in selected_label or ".IS" in selected_item.get("ticker", "") or selected_item["type"] == "gram_altin" else "$"
+        c1.metric("Son Fiyat", f"{last_close:.2f} {birim}", f"{daily_change:+.2f}% Günlük")
         c2.metric(f"Nominal Getiri ({period})", f"%{period_return:+.2f}")
         c3.metric(f"{ay_sayisi} Aylık Enflasyon", f"%{donem_enf:.2f}")
         
-        # Renk ve Ok Yönü Kodlaması
         c4.metric(
             label=f"Reel Getiri ({period})",
             value=f"%{reel_getiri:+.2f}",
             delta=f"{reel_getiri:+.2f}% Reel Kazanç/Kayıp"
         )
-        
-        # RSI Durumu
         rsi_durum = "Aşırı Alım" if last_rsi > 70 else ("Aşırı Satım" if last_rsi < 30 else "Nötr")
         c5.metric("RSI (14)", f"{last_rsi:.2f}", rsi_durum)
 
@@ -181,4 +206,3 @@ else:
         fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
         fig_rsi.update_layout(title="RSI Momentum", yaxis=dict(range=[0, 100]), height=200)
         st.plotly_chart(fig_rsi, use_container_width=True)
-        
