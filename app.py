@@ -60,8 +60,35 @@ def get_period_inflation(annual_inflation, p):
     period_enf = ((1 + monthly_rate) ** months - 1) * 100
     return period_enf, months
 
+# BULUT BLOKAJINI AŞAN ÖZEL HTTP OTURUMU
+def get_browser_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    })
+    return session
+
+# BIST CANLI FİYAT VE DÜNKÜ KAPANIŞ MOTORU
 @st.cache_data(ttl=30)
 def get_bist_live_snapshot(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d"
+        session = get_browser_session()
+        res = session.get(url, timeout=5)
+        if res.status_code == 200:
+            meta = res.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+            last_p = meta.get("regularMarketPrice", None)
+            prev_p = meta.get("chartPreviousClose", None) or meta.get("previousClose", None)
+            if last_p and prev_p and prev_p > 0:
+                change_amount = float(last_p) - float(prev_p)
+                change_pct = (change_amount / float(prev_p)) * 100
+                return float(last_p), float(prev_p), float(change_pct), float(change_amount)
+    except Exception:
+        pass
+
+    # Yedek Motor: yfinance fast_info
     try:
         t = yf.Ticker(symbol)
         fi = getattr(t, 'fast_info', None)
@@ -76,6 +103,7 @@ def get_bist_live_snapshot(symbol):
         pass
     return None, None, None, None
 
+# CANLI GRAM ALTIN MOTORU
 @st.cache_data(ttl=60)
 def get_live_gram_altin(fallback_price=None):
     try:
@@ -101,6 +129,7 @@ def get_live_gram_altin(fallback_price=None):
         }
     return None
 
+# GEÇMİŞ ZAMAN SERİSİ MOTORU
 @st.cache_data(ttl=300)
 def load_clean_data(ticker, p):
     df = pd.DataFrame()
@@ -132,6 +161,7 @@ def load_clean_data(ticker, p):
         return df
     return pd.DataFrame()
 
+# GRAM ALTIN HESAPLAYICI
 @st.cache_data(ttl=300)
 def get_gram_altin_data(period):
     df_ons = load_clean_data("GC=F", period)
@@ -156,38 +186,58 @@ def get_gram_altin_data(period):
         return df_gram.dropna()
     return pd.DataFrame()
 
-# TAMAMEN OTOMATİK VE DİNAMİK ÇARPAN MOTORU (ELLE GİRİŞ YOK)
-@st.cache_data(ttl=900)
+# BULUT BLOKAJINI AŞAN CANLI ÇARPAN MOTORU (KESİNTİSİZ API)
+@st.cache_data(ttl=1800)
 def get_fundamental_data(ticker_symbol):
     data = {}
+    
+    # 1. Aşama: Yahoo Query API (Direkt Browser Headers ile İstek)
+    try:
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker_symbol}?modules=defaultKeyStatistics,financialData,summaryDetail"
+        session = get_browser_session()
+        res = session.get(url, timeout=5)
+        if res.status_code == 200:
+            result = res.json().get("quoteSummary", {}).get("result", [{}])[0]
+            ks = result.get("defaultKeyStatistics", {})
+            fd = result.get("financialData", {})
+            sd = result.get("summaryDetail", {})
+
+            data["trailingPE"] = sd.get("trailingPE", {}).get("raw", None)
+            data["forwardPE"] = sd.get("forwardPE", {}).get("raw", None)
+            data["priceToBook"] = ks.get("priceToBook", {}).get("raw", None)
+            
+            div = sd.get("dividendYield", {}).get("raw", None) or sd.get("trailingAnnualDividendYield", {}).get("raw", None)
+            if div is not None:
+                data["dividendYield"] = div if div < 1.0 else (div / 100.0)
+
+            data["returnOnEquity"] = fd.get("returnOnEquity", {}).get("raw", None)
+            data["profitMargins"] = fd.get("profitMargins", {}).get("raw", None)
+            data["debtToEquity"] = fd.get("debtToEquity", {}).get("raw", None)
+            data["quickRatio"] = fd.get("quickRatio", {}).get("raw", None)
+            
+            if data.get("trailingPE") or data.get("priceToBook"):
+                return data
+    except Exception:
+        pass
+
+    # 2. Aşama: yfinance Standart Fallback
     try:
         t = yf.Ticker(ticker_symbol)
-        
-        # 1. Öncelik: fast_info
-        fi = getattr(t, 'fast_info', None)
-        if fi:
-            data["trailingPE"] = fi.get("trailing_pe", None) or fi.get("trailingPE", None)
-            data["priceToBook"] = fi.get("price_to_book", None) or fi.get("priceToBook", None)
-        
-        # 2. Öncelik: info
         info = getattr(t, 'info', {})
         if isinstance(info, dict) and len(info) > 0:
-            if not data.get("trailingPE"):
-                data["trailingPE"] = info.get("trailingPE") or info.get("forwardPE")
-            if not data.get("priceToBook"):
-                data["priceToBook"] = info.get("priceToBook")
-            
+            data["trailingPE"] = info.get("trailingPE") or info.get("forwardPE")
+            data["forwardPE"] = info.get("forwardPE")
+            data["priceToBook"] = info.get("priceToBook")
             div = info.get("dividendYield") or info.get("trailingAnnualDividendYield")
             if div is not None:
                 data["dividendYield"] = div if div < 1.0 else (div / 100.0)
-                
-            data["forwardPE"] = info.get("forwardPE")
             data["returnOnEquity"] = info.get("returnOnEquity")
             data["profitMargins"] = info.get("profitMargins")
             data["debtToEquity"] = info.get("debtToEquity")
             data["quickRatio"] = info.get("quickRatio")
     except Exception:
         pass
+
     return data
 
 def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
@@ -206,23 +256,26 @@ page_mode = st.sidebar.radio(
     index=0
 )
 
-# 1. MOD: KILAVUZ
+# 1. MOD: GENEL BİLGİ VE KILAVUZ
 if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     st.subheader("📖 Finansal Okuryazarlık, Temel Göstergeler & Yatırımcı Kılavuzu")
-    st.caption("Paneldeki göstergelerin hesaplama mantığı:")
+    st.caption("Paneldeki tüm göstergelerin Borsa İstanbul hesaplama mantığı:")
 
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### 1. 💵 Günlük Değişim ve Getiri Kuralları")
         st.markdown("""
-        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır.
-        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır.
+        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır:
+          $$\\Delta \\text{TL} = \\text{Son Fiyat} - \\text{Dünkü Kapanış}$$
+          $$\\text{Günlük Değişim (\\%)} = \\frac{\\Delta \\text{TL}}{\\text{Dünkü Kapanış}} \\times 100$$
+        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır:
+          $$\\text{Reel Getiri} = \\frac{1 + \\text{Nominal Getiri}}{1 + \\text{Enflasyon}} - 1$$
         """)
         st.markdown("### 2. 📊 Şirket Değerleme Çarpanları")
         st.markdown("""
-        * **F/K (Fiyat / Kazanç):** 5–12 ideal amortisman bandı.
-        * **PD/DD (Piyasa/Defter):** 1–3 dengeli özkaynak çarpanı.
-        * **Temettü Verimi (%):** Yıllık nakit kâr payı oranı.
+        * **F/K (Fiyat / Kazanç):** 5–12 ideal amortisman bandıdır.
+        * **PD/DD (Piyasa/Defter):** 1–3 dengeli özkaynak çarpanıdır.
+        * **Temettü Verimi (%):** Hissenin fiyatına oranla sağladığı nakit kâr payı oranıdır.
         """)
     with col2:
         st.markdown("### 3. 🏢 Bilanço Sağlığı ve Kârlılık")
@@ -233,7 +286,7 @@ if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
         """)
         st.markdown("### 4. 📈 Teknik Analiz")
         st.markdown("""
-        * **RSI (14):** 30 altı aşırı satım, 70 üstü aşırı alım.
+        * **RSI (14):** 30 altı aşırı satım (fırsat), 70 üstü aşırı alım (düzeltme riski).
         * **SMA 20 & 50:** Fiyat ortalamaların üzerindeyse trend pozitiftir.
         """)
 
@@ -314,6 +367,7 @@ else:
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, period)
     st.sidebar.metric(label=f"Seçilen Dönem Enflasyonu ({period} - {ay_sayisi} Aylık)", value=f"%{donem_enf:.2f}")
 
+    # FONLAR
     if selected_item["type"] == "fund":
         st.subheader(f"🏷️ {selected_label}")
         fon_yillik = selected_item["yillik_getiri"]
@@ -335,6 +389,7 @@ else:
         * **İşlem:** TEFAS üzerinden tüm bankalardan valörsüz alınıp satılabilir.
         """)
 
+    # HİSSE, GRAM ALTIN, ONS, BIST 100, DÖVİZ
     else:
         if selected_item["type"] == "gram_altin":
             symbol = "GRAM_ALTIN"
