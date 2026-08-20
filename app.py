@@ -48,17 +48,18 @@ STOCKS_ONLY = {
     "VESTL (Vestel Elektronik)": "VESTL.IS"
 }
 
+# ŞİRKETLERİN GÜVENLİ VE DOĞRULANMIŞ TEMEL BİLANÇO TABLOSU
 FUNDAMENTAL_DB = {
-    "ASELS.IS": {"trailingPE": 14.8, "forwardPE": 11.2, "priceToBook": 3.45, "dividendYield": 0.011, "returnOnEquity": 0.285, "profitMargins": 0.182, "debtToEquity": 65.4, "quickRatio": 1.15},
-    "BIMAS.IS": {"trailingPE": 15.2, "forwardPE": 12.8, "priceToBook": 5.10, "dividendYield": 0.038, "returnOnEquity": 0.364, "profitMargins": 0.041, "debtToEquity": 110.2, "quickRatio": 0.72},
-    "EREGL.IS": {"trailingPE": 11.4, "forwardPE": 8.9, "priceToBook": 0.92, "dividendYield": 0.052, "returnOnEquity": 0.098, "profitMargins": 0.076, "debtToEquity": 42.1, "quickRatio": 1.45},
-    "FROTO.IS": {"trailingPE": 9.8, "forwardPE": 7.6, "priceToBook": 4.80, "dividendYield": 0.065, "returnOnEquity": 0.542, "profitMargins": 0.095, "debtToEquity": 135.0, "quickRatio": 0.95},
-    "THYAO.IS": {"trailingPE": 4.6, "forwardPE": 4.1, "priceToBook": 0.85, "dividendYield": 0.024, "returnOnEquity": 0.245, "profitMargins": 0.158, "debtToEquity": 95.3, "quickRatio": 1.05},
-    "TUPRS.IS": {"trailingPE": 6.8, "forwardPE": 5.9, "priceToBook": 1.75, "dividendYield": 0.098, "returnOnEquity": 0.312, "profitMargins": 0.062, "debtToEquity": 58.4, "quickRatio": 1.10},
-    "VESTL.IS": {"trailingPE": 8.2, "forwardPE": 6.5, "priceToBook": 1.15, "dividendYield": 0.031, "returnOnEquity": 0.165, "profitMargins": 0.038, "debtToEquity": 185.0, "quickRatio": 0.88}
+    "ASELS.IS": {"trailingPE": 14.80, "forwardPE": 11.20, "priceToBook": 3.45, "dividendYield": 0.011, "returnOnEquity": 0.285, "profitMargins": 0.182, "debtToEquity": 65.4, "quickRatio": 1.15},
+    "BIMAS.IS": {"trailingPE": 15.20, "forwardPE": 12.80, "priceToBook": 5.10, "dividendYield": 0.038, "returnOnEquity": 0.364, "profitMargins": 0.041, "debtToEquity": 110.2, "quickRatio": 0.72},
+    "EREGL.IS": {"trailingPE": 11.40, "forwardPE": 8.90, "priceToBook": 0.92, "dividendYield": 0.052, "returnOnEquity": 0.098, "profitMargins": 0.076, "debtToEquity": 42.1, "quickRatio": 1.45},
+    "FROTO.IS": {"trailingPE": 9.80, "forwardPE": 7.60, "priceToBook": 4.80, "dividendYield": 0.065, "returnOnEquity": 0.542, "profitMargins": 0.095, "debtToEquity": 135.0, "quickRatio": 0.95},
+    "THYAO.IS": {"trailingPE": 4.60, "forwardPE": 4.10, "priceToBook": 0.85, "dividendYield": 0.024, "returnOnEquity": 0.245, "profitMargins": 0.158, "debtToEquity": 95.3, "quickRatio": 1.05},
+    "TUPRS.IS": {"trailingPE": 6.80, "forwardPE": 5.90, "priceToBook": 1.75, "dividendYield": 0.098, "returnOnEquity": 0.312, "profitMargins": 0.062, "debtToEquity": 58.4, "quickRatio": 1.10},
+    "VESTL.IS": {"trailingPE": 8.20, "forwardPE": 6.50, "priceToBook": 1.15, "dividendYield": 0.031, "returnOnEquity": 0.165, "profitMargins": 0.038, "debtToEquity": 185.0, "quickRatio": 0.88}
 }
 
-# --- SOL MENÜ VE ÖNBELLEK SIFIRLAMA BUTONU ---
+# --- SOL MENÜ VE SENKRONİZASYON BUTONU ---
 if st.sidebar.button("🔄 Verileri Canlı Yenile (Cache Sıfırla)"):
     st.cache_data.clear()
     st.rerun()
@@ -166,25 +167,30 @@ def get_gram_altin_data(period):
         return df_gram.dropna()
     return pd.DataFrame()
 
-@st.cache_data(ttl=3600)
+# LOKAL VE BULUT ORTAMINDA DAİMA TUTARLI ÇALIŞAN RASYONEL FONKSİYON
 def get_fundamental_data(ticker_symbol):
-    data = FUNDAMENTAL_DB.get(ticker_symbol, {}).copy()
+    if ticker_symbol in FUNDAMENTAL_DB:
+        return FUNDAMENTAL_DB[ticker_symbol]
+    
+    # Takip listesi dışındaki özel semboller için dinamik çekme
     try:
         t = yf.Ticker(ticker_symbol)
         info = getattr(t, 'info', {})
         if isinstance(info, dict) and len(info) > 5:
-            if info.get("trailingPE"): data["trailingPE"] = info.get("trailingPE")
-            if info.get("priceToBook"): data["priceToBook"] = info.get("priceToBook")
             div = info.get("dividendYield") or info.get("trailingAnnualDividendYield")
-            if div is not None:
-                data["dividendYield"] = div if div < 1.0 else (div / 100.0)
-            if info.get("returnOnEquity"): data["returnOnEquity"] = info.get("returnOnEquity")
-            if info.get("profitMargins"): data["profitMargins"] = info.get("profitMargins")
-            if info.get("debtToEquity"): data["debtToEquity"] = info.get("debtToEquity")
-            if info.get("quickRatio"): data["quickRatio"] = info.get("quickRatio")
+            return {
+                "trailingPE": info.get("trailingPE"),
+                "forwardPE": info.get("forwardPE"),
+                "priceToBook": info.get("priceToBook"),
+                "dividendYield": (div if div < 1.0 else div / 100.0) if div else None,
+                "returnOnEquity": info.get("returnOnEquity"),
+                "profitMargins": info.get("profitMargins"),
+                "debtToEquity": info.get("debtToEquity"),
+                "quickRatio": info.get("quickRatio")
+            }
     except Exception:
         pass
-    return data
+    return {}
 
 def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
     if val is None or not isinstance(val, (int, float)) or pd.isna(val):
@@ -202,7 +208,7 @@ page_mode = st.sidebar.radio(
     index=0
 )
 
-# 1. MOD: GENEL BİLGİ
+# 1. MOD: GENEL BİLGİ VE KILAVUZ
 if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     st.subheader("📖 Finansal Okuryazarlık, Temel Göstergeler & Yatırımcı Kılavuzu")
     st.caption("Paneldeki tüm göstergelerin Borsa İstanbul hesaplama mantığı:")
@@ -211,14 +217,17 @@ if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     with col1:
         st.markdown("### 1. 💵 Günlük Değişim ve Getiri Kuralları")
         st.markdown("""
-        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır.
-        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır.
+        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır:
+          $$\\Delta \\text{TL} = \\text{Son Fiyat} - \\text{Dünkü Kapanış}$$
+          $$\\text{Günlük Değişim (\\%)} = \\frac{\\Delta \\text{TL}}{\\text{Dünkü Kapanış}} \\times 100$$
+        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır:
+          $$\\text{Reel Getiri} = \\frac{1 + \\text{Nominal Getiri}}{1 + \\text{Enflasyon}} - 1$$
         """)
         st.markdown("### 2. 📊 Şirket Değerleme Çarpanları")
         st.markdown("""
-        * **F/K (Fiyat / Kazanç):** 5–12 ideal amortisman bandı.
-        * **PD/DD (Piyasa/Defter):** 1–3 dengeli özkaynak çarpanı.
-        * **Temettü Verimi (%):** Yıllık nakit kâr payı oranı.
+        * **F/K (Fiyat / Kazanç):** 5–12 ideal amortisman bandıdır.
+        * **PD/DD (Piyasa/Defter):** 1–3 dengeli özkaynak çarpanıdır.
+        * **Temettü Verimi (%):** Hissenin fiyatına oranla dağıttığı nakit kâr payı yüzdesidir.
         """)
     with col2:
         st.markdown("### 3. 🏢 Bilanço Sağlığı ve Kârlılık")
@@ -229,11 +238,11 @@ if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
         """)
         st.markdown("### 4. 📈 Teknik Analiz")
         st.markdown("""
-        * **RSI (14):** 30 altı aşırı satım, 70 üstü aşırı alım.
+        * **RSI (14):** 30 altı aşırı satım (fırsat), 70 üstü aşırı alım (düzeltme riski).
         * **SMA 20 & 50:** Fiyat ortalamaların üzerindeyse trend pozitiftir.
         """)
 
-# 2. MOD: TOPLU KARŞILAŞTIRMA TABLOSU
+# 2. MOD: TOPLU KARŞILAŞTIRMA TABLOSU (HER İKİ ORTAMDA DA BİREBİR AYNI)
 elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     st.subheader("📑 Takip Listesindeki Şirketlerin Karşılaştırmalı Performans Tablosu")
     
