@@ -60,35 +60,42 @@ def get_period_inflation(annual_inflation, p):
     period_enf = ((1 + monthly_rate) ** months - 1) * 100
     return period_enf, months
 
-# BULUT BLOKAJINI AŞAN ÖZEL HTTP OTURUMU
-def get_browser_session():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    })
-    return session
+# BIST İŞ YATIRIM / RESMİ TEMEL ANALİZ API MOTORU (BULUTTA ASLA ENGELLENMEZ)
+@st.cache_data(ttl=1800)
+def get_bist_official_fundamentals():
+    url = "https://www.isyatirim.com.tr/_layouts/15/IsYatirim.Website/CommonData.aspx/HisseTeknikVeriler"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Referer": "https://www.isyatirim.com.tr/tr-tr/analiz/hisse/Sayfalar/default.aspx"
+    }
+    stocks_data = {}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            raw_list = res.json().get("value", [])
+            for item in raw_list:
+                code = item.get("HisseKodu", "").strip().upper()
+                if code:
+                    def parse_num(v):
+                        if v is None: return None
+                        try:
+                            return float(str(v).replace(".", "").replace(",", "."))
+                        except:
+                            return None
+
+                    stocks_data[f"{code}.IS"] = {
+                        "trailingPE": parse_num(item.get("FK")),
+                        "priceToBook": parse_num(item.get("PDDD")),
+                        "dividendYield": (parse_num(item.get("TemettuVerimi")) / 100.0) if parse_num(item.get("TemettuVerimi")) is not None else None,
+                        "hisse_adi": item.get("HisseAdi", code)
+                    }
+    except Exception:
+        pass
+    return stocks_data
 
 # BIST CANLI FİYAT VE DÜNKÜ KAPANIŞ MOTORU
 @st.cache_data(ttl=30)
 def get_bist_live_snapshot(symbol):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2d"
-        session = get_browser_session()
-        res = session.get(url, timeout=5)
-        if res.status_code == 200:
-            meta = res.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-            last_p = meta.get("regularMarketPrice", None)
-            prev_p = meta.get("chartPreviousClose", None) or meta.get("previousClose", None)
-            if last_p and prev_p and prev_p > 0:
-                change_amount = float(last_p) - float(prev_p)
-                change_pct = (change_amount / float(prev_p)) * 100
-                return float(last_p), float(prev_p), float(change_pct), float(change_amount)
-    except Exception:
-        pass
-
-    # Yedek Motor: yfinance fast_info
     try:
         t = yf.Ticker(symbol)
         fi = getattr(t, 'fast_info', None)
@@ -186,59 +193,9 @@ def get_gram_altin_data(period):
         return df_gram.dropna()
     return pd.DataFrame()
 
-# BULUT BLOKAJINI AŞAN CANLI ÇARPAN MOTORU (KESİNTİSİZ API)
-@st.cache_data(ttl=1800)
-def get_fundamental_data(ticker_symbol):
-    data = {}
-    
-    # 1. Aşama: Yahoo Query API (Direkt Browser Headers ile İstek)
-    try:
-        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker_symbol}?modules=defaultKeyStatistics,financialData,summaryDetail"
-        session = get_browser_session()
-        res = session.get(url, timeout=5)
-        if res.status_code == 200:
-            result = res.json().get("quoteSummary", {}).get("result", [{}])[0]
-            ks = result.get("defaultKeyStatistics", {})
-            fd = result.get("financialData", {})
-            sd = result.get("summaryDetail", {})
-
-            data["trailingPE"] = sd.get("trailingPE", {}).get("raw", None)
-            data["forwardPE"] = sd.get("forwardPE", {}).get("raw", None)
-            data["priceToBook"] = ks.get("priceToBook", {}).get("raw", None)
-            
-            div = sd.get("dividendYield", {}).get("raw", None) or sd.get("trailingAnnualDividendYield", {}).get("raw", None)
-            if div is not None:
-                data["dividendYield"] = div if div < 1.0 else (div / 100.0)
-
-            data["returnOnEquity"] = fd.get("returnOnEquity", {}).get("raw", None)
-            data["profitMargins"] = fd.get("profitMargins", {}).get("raw", None)
-            data["debtToEquity"] = fd.get("debtToEquity", {}).get("raw", None)
-            data["quickRatio"] = fd.get("quickRatio", {}).get("raw", None)
-            
-            if data.get("trailingPE") or data.get("priceToBook"):
-                return data
-    except Exception:
-        pass
-
-    # 2. Aşama: yfinance Standart Fallback
-    try:
-        t = yf.Ticker(ticker_symbol)
-        info = getattr(t, 'info', {})
-        if isinstance(info, dict) and len(info) > 0:
-            data["trailingPE"] = info.get("trailingPE") or info.get("forwardPE")
-            data["forwardPE"] = info.get("forwardPE")
-            data["priceToBook"] = info.get("priceToBook")
-            div = info.get("dividendYield") or info.get("trailingAnnualDividendYield")
-            if div is not None:
-                data["dividendYield"] = div if div < 1.0 else (div / 100.0)
-            data["returnOnEquity"] = info.get("returnOnEquity")
-            data["profitMargins"] = info.get("profitMargins")
-            data["debtToEquity"] = info.get("debtToEquity")
-            data["quickRatio"] = info.get("quickRatio")
-    except Exception:
-        pass
-
-    return data
+# RESMİ BIST VERİSİNDEN ÇARPANLARI GETİRME
+def get_fundamental_data(ticker_symbol, all_fundamentals):
+    return all_fundamentals.get(ticker_symbol, {})
 
 def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
     if val is None or not isinstance(val, (int, float)) or pd.isna(val):
@@ -256,20 +213,17 @@ page_mode = st.sidebar.radio(
     index=0
 )
 
-# 1. MOD: GENEL BİLGİ VE KILAVUZ
+# 1. MOD: KILAVUZ
 if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     st.subheader("📖 Finansal Okuryazarlık, Temel Göstergeler & Yatırımcı Kılavuzu")
-    st.caption("Paneldeki tüm göstergelerin Borsa İstanbul hesaplama mantığı:")
+    st.caption("Paneldeki göstergelerin hesaplama mantığı:")
 
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("### 1. 💵 Günlük Değişim ve Getiri Kuralları")
         st.markdown("""
-        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır:
-          $$\\Delta \\text{TL} = \\text{Son Fiyat} - \\text{Dünkü Kapanış}$$
-          $$\\text{Günlük Değişim (\\%)} = \\frac{\\Delta \\text{TL}}{\\text{Dünkü Kapanış}} \\times 100$$
-        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır:
-          $$\\text{Reel Getiri} = \\frac{1 + \\text{Nominal Getiri}}{1 + \\text{Enflasyon}} - 1$$
+        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış arasındaki net TL tutarı ve yüzdesel orandır.
+        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır.
         """)
         st.markdown("### 2. 📊 Şirket Değerleme Çarpanları")
         st.markdown("""
@@ -286,7 +240,7 @@ if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
         """)
         st.markdown("### 4. 📈 Teknik Analiz")
         st.markdown("""
-        * **RSI (14):** 30 altı aşırı satım (fırsat), 70 üstü aşırı alım (düzeltme riski).
+        * **RSI (14):** 30 altı aşırı satım, 70 üstü aşırı alım.
         * **SMA 20 & 50:** Fiyat ortalamaların üzerindeyse trend pozitiftir.
         """)
 
@@ -298,13 +252,16 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     yillik_enf = st.sidebar.number_input("Yıllık Enflasyon (TÜFE %)", value=TUIK_YILLIK_ENFLASYON, step=0.5)
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, comp_period)
     
-    st.caption(f"Hesaplama: **Dünkü Kapanışa Göre BIST Değişimi** | Seçilen Dönem: **{comp_period} ({ay_sayisi} Aylık)** | Enflasyon: **%{donem_enf:.2f}**")
+    st.caption(f"Hesaplama: **Dünkü Kapanışa Göre BIST Değişimi** | Kaynak: **İş Yatırım & Borsa İstanbul** | Enflasyon: **%{donem_enf:.2f}**")
+
+    # Tüm BIST Temel Verilerini Tek Seferde Çek
+    all_bist_fundamentals = get_bist_official_fundamentals()
 
     summary_rows = []
-    with st.spinner("Şirket verileri canlı API'den çekiliyor..."):
+    with st.spinner("Şirket verileri Borsa İstanbul resmi kaynağından yükleniyor..."):
         for name, ticker in STOCKS_ONLY.items():
             df_hist = load_clean_data(ticker, "1y")
-            info = get_fundamental_data(ticker)
+            info = get_fundamental_data(ticker, all_bist_fundamentals)
             live_last, live_prev, live_change, live_diff = get_bist_live_snapshot(ticker)
 
             if not df_hist.empty and len(df_hist) >= 2:
@@ -350,6 +307,7 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
 
 # 3. MOD: TEKİL DETAY SAYFASI
 else:
+    all_bist_fundamentals = get_bist_official_fundamentals()
     st.sidebar.markdown("---")
     st.sidebar.subheader("Piyasa ve Fon Seçimi")
     selected_label = st.sidebar.selectbox("Takip Listesi:", list(WATCHLIST.keys()), index=5)
@@ -367,7 +325,6 @@ else:
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, period)
     st.sidebar.metric(label=f"Seçilen Dönem Enflasyonu ({period} - {ay_sayisi} Aylık)", value=f"%{donem_enf:.2f}")
 
-    # FONLAR
     if selected_item["type"] == "fund":
         st.subheader(f"🏷️ {selected_label}")
         fon_yillik = selected_item["yillik_getiri"]
@@ -389,7 +346,6 @@ else:
         * **İşlem:** TEFAS üzerinden tüm bankalardan valörsüz alınıp satılabilir.
         """)
 
-    # HİSSE, GRAM ALTIN, ONS, BIST 100, DÖVİZ
     else:
         if selected_item["type"] == "gram_altin":
             symbol = "GRAM_ALTIN"
@@ -469,22 +425,13 @@ else:
 
         with tab2:
             if selected_item["type"] == "stock" or (selected_item["type"] == "custom" and ".IS" in symbol):
-                st.subheader(f"📑 {selected_label} - Finansal Sağlık Karnesi")
-                info = get_fundamental_data(symbol)
+                st.subheader(f"📑 {selected_label} - Finansal Sağlık Karnesi (Resmi BIST)")
+                info = get_fundamental_data(symbol, all_bist_fundamentals)
 
                 st.markdown("##### 1. Değerleme ve Çarpanlar")
-                k1, k2, k3, k4 = st.columns(4)
+                k1, k2, k3 = st.columns(3)
                 k1.metric("F/K", format_val(info.get("trailingPE")))
-                k2.metric("İleri Dönem F/K", format_val(info.get("forwardPE")))
-                k3.metric("PD/DD", format_val(info.get("priceToBook")))
-                k4.metric("Temettü Verimi", format_val(info.get("dividendYield"), prefix="%", multiplier=100))
-
-                st.markdown("---")
-                st.markdown("##### 2. Kârlılık ve Borçluluk")
-                b1, b2, b3, b4 = st.columns(4)
-                b1.metric("Özsermaye Kârı (ROE)", format_val(info.get("returnOnEquity"), prefix="%", multiplier=100, precision=1))
-                b2.metric("Net Kâr Marjı", format_val(info.get("profitMargins"), prefix="%", multiplier=100, precision=1))
-                b3.metric("Borç / Özkaynak", format_val(info.get("debtToEquity"), prefix="%", precision=1))
-                b4.metric("Likit Oran (Quick)", format_val(info.get("quickRatio")))
+                k2.metric("PD/DD", format_val(info.get("priceToBook")))
+                k3.metric("Temettü Verimi", format_val(info.get("dividendYield"), prefix="%", multiplier=100))
             else:
                 st.info("Temel analiz karnesi sadece BIST hisse senetleri için geçerlidir.")
