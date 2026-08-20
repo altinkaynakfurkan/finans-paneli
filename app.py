@@ -48,7 +48,6 @@ STOCKS_ONLY = {
     "VESTL (Vestel Elektronik)": "VESTL.IS"
 }
 
-# ŞİRKETLERİN TEMEL BİLANÇO & ÇARPAN REFERANS TABLOSU (GARANTİLİ VERİ)
 FUNDAMENTAL_DB = {
     "ASELS.IS": {"trailingPE": 14.8, "forwardPE": 11.2, "priceToBook": 3.45, "dividendYield": 0.011, "returnOnEquity": 0.285, "profitMargins": 0.182, "debtToEquity": 65.4, "quickRatio": 1.15},
     "BIMAS.IS": {"trailingPE": 15.2, "forwardPE": 12.8, "priceToBook": 5.10, "dividendYield": 0.038, "returnOnEquity": 0.364, "profitMargins": 0.041, "debtToEquity": 110.2, "quickRatio": 0.72},
@@ -59,6 +58,11 @@ FUNDAMENTAL_DB = {
     "VESTL.IS": {"trailingPE": 8.2, "forwardPE": 6.5, "priceToBook": 1.15, "dividendYield": 0.031, "returnOnEquity": 0.165, "profitMargins": 0.038, "debtToEquity": 185.0, "quickRatio": 0.88}
 }
 
+# --- SOL MENÜ VE ÖNBELLEK SIFIRLAMA BUTONU ---
+if st.sidebar.button("🔄 Verileri Canlı Yenile (Cache Sıfırla)"):
+    st.cache_data.clear()
+    st.rerun()
+
 def get_period_inflation(annual_inflation, p):
     period_months = {"1mo": 1, "3mo": 3, "6mo": 6, "1y": 12, "2y": 24, "5y": 60}
     months = period_months.get(p, 12)
@@ -66,7 +70,7 @@ def get_period_inflation(annual_inflation, p):
     period_enf = ((1 + monthly_rate) ** months - 1) * 100
     return period_enf, months
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def get_bist_live_snapshot(symbol):
     try:
         t = yf.Ticker(symbol)
@@ -107,7 +111,7 @@ def get_live_gram_altin(fallback_price=None):
         }
     return None
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def load_clean_data(ticker, p):
     df = pd.DataFrame()
     try:
@@ -138,7 +142,7 @@ def load_clean_data(ticker, p):
         return df
     return pd.DataFrame()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def get_gram_altin_data(period):
     df_ons = load_clean_data("GC=F", period)
     df_usd = load_clean_data("USDTRY=X", period)
@@ -162,7 +166,6 @@ def get_gram_altin_data(period):
         return df_gram.dropna()
     return pd.DataFrame()
 
-# ASLA BOŞ KALMAYAN GÜVENLİ ÇARPAN MOTORU
 @st.cache_data(ttl=3600)
 def get_fundamental_data(ticker_symbol):
     data = FUNDAMENTAL_DB.get(ticker_symbol, {}).copy()
@@ -188,7 +191,6 @@ def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
         return "-"
     return f"{prefix}{val * multiplier:.{precision}f}{suffix}"
 
-# --- SOL MENÜ ---
 st.sidebar.header("🧭 Menü Seçimi")
 page_mode = st.sidebar.radio(
     "Sayfa:",
@@ -200,7 +202,7 @@ page_mode = st.sidebar.radio(
     index=0
 )
 
-# 1. MOD: GENEL BİLGİ & FİNANSAL KILAVUZ
+# 1. MOD: GENEL BİLGİ
 if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     st.subheader("📖 Finansal Okuryazarlık, Temel Göstergeler & Yatırımcı Kılavuzu")
     st.caption("Paneldeki tüm göstergelerin Borsa İstanbul hesaplama mantığı:")
@@ -308,7 +310,6 @@ else:
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, period)
     st.sidebar.metric(label=f"Seçilen Dönem Enflasyonu ({period} - {ay_sayisi} Aylık)", value=f"%{donem_enf:.2f}")
 
-    # FONLAR
     if selected_item["type"] == "fund":
         st.subheader(f"🏷️ {selected_label}")
         fon_yillik = selected_item["yillik_getiri"]
@@ -330,7 +331,6 @@ else:
         * **İşlem:** TEFAS üzerinden tüm bankalardan valörsüz alınıp satılabilir.
         """)
 
-    # HİSSE, GRAM ALTIN, ONS, BIST 100, DÖVİZ
     else:
         if selected_item["type"] == "gram_altin":
             symbol = "GRAM_ALTIN"
