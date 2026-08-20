@@ -155,16 +155,39 @@ def get_gram_altin_data(period):
         return df_gram.dropna()
     return pd.DataFrame()
 
-@st.cache_data(ttl=900)
+# BULUT & LOKAL UYUMLU GÜVENLİ ÇARPAN MOTORU
+@st.cache_data(ttl=3600)
 def get_fundamental_data(ticker_symbol):
+    data = {}
     try:
         t = yf.Ticker(ticker_symbol)
-        info = t.info
-        if info and isinstance(info, dict) and len(info) > 5:
-            return info
+        
+        # 1. Öncelik: fast_info (Bulutta engellenmeyen hızlı API)
+        fi = getattr(t, 'fast_info', None)
+        if fi:
+            data["trailingPE"] = fi.get("trailing_pe", None) or fi.get("trailingPE", None)
+            data["priceToBook"] = fi.get("price_to_book", None) or fi.get("priceToBook", None)
+        
+        # 2. Öncelik: info (Temettü ve kârlılık oranları)
+        info = getattr(t, 'info', {})
+        if isinstance(info, dict) and len(info) > 0:
+            if not data.get("trailingPE"):
+                data["trailingPE"] = info.get("trailingPE") or info.get("forwardPE")
+            if not data.get("priceToBook"):
+                data["priceToBook"] = info.get("priceToBook")
+            
+            div = info.get("dividendYield") or info.get("trailingAnnualDividendYield")
+            if div is not None:
+                data["dividendYield"] = div if div < 1.0 else (div / 100.0)
+                
+            data["forwardPE"] = info.get("forwardPE")
+            data["returnOnEquity"] = info.get("returnOnEquity")
+            data["profitMargins"] = info.get("profitMargins")
+            data["debtToEquity"] = info.get("debtToEquity")
+            data["quickRatio"] = info.get("quickRatio")
     except Exception:
         pass
-    return {}
+    return data
 
 def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
     if val is None or not isinstance(val, (int, float)) or pd.isna(val):
@@ -351,7 +374,6 @@ else:
                 last_p = live_last if live_last is not None else float(data['Close'].iloc[-1])
                 prev_close = live_prev if live_prev is not None else float(data['Close'].iloc[-2])
                 
-                # DÜNKÜ KAPANIŞA GÖRE TL VE YÜZDE FARKI
                 diff_amount = live_diff if live_diff is not None else (last_p - prev_close)
                 daily_c = ((last_p - prev_close) / prev_close) * 100
                 period_r = ((last_p - start_p) / start_p) * 100
