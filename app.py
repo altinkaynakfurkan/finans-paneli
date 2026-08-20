@@ -4,25 +4,26 @@ import pandas as pd
 import plotly.graph_objects as go
 from ta.trend import SMAIndicator
 from ta.momentum import RSIIndicator
+import requests
 
 st.set_page_config(page_title="Finans & Yatırım Analiz Paneli", layout="wide")
 
 st.title("📊 Finansal Takip & Yatırım Analiz Paneli")
 
-# 1. Enflasyon Referansı
+# 1. Yıllık Enflasyon Referansı
 TUIK_YILLIK_ENFLASYON = 31.75
 
 # 2. Varlık Listesi
 WATCHLIST = {
-    "KPI - İş Portföy Para Piyasası Katılım Fonu": {
+    "KPI - İş Portföy Para Piyasası Katılım (TL) Fonu": {
         "ticker": "KPI", "type": "fund", "yillik_getiri": 44.50,
         "fon_adi": "İş Portföy Para Piyasası Katılım (TL) Fonu"
     },
-    "IAT - İş Portföy Kira Sertifikaları Katılım Fonu": {
+    "IAT - İş Portföy Kira Sertifikaları Katılım (TL) Fonu": {
         "ticker": "IAT", "type": "fund", "yillik_getiri": 39.80,
         "fon_adi": "İş Portföy Kira Sertifikaları Katılım (TL) Fonu"
     },
-    "Gram Altın (TL)": {"ticker": "GRAM_ALTIN", "type": "gram_altin"},
+    "Gram Altın (TL - Canlı Alış/Satış)": {"ticker": "GRAM_ALTIN", "type": "gram_altin"},
     "Altın Ons (USD)": {"ticker": "GC=F", "type": "commodity"},
     "BIST 100 Endeksi": {"ticker": "XU100.IS", "type": "index"},
     "ASELS (Aselsan)": {"ticker": "ASELS.IS", "type": "stock"},
@@ -54,24 +55,104 @@ def get_period_inflation(annual_inflation, p):
     period_enf = ((1 + monthly_rate) ** months - 1) * 100
     return period_enf, months
 
-@st.cache_data(ttl=600)
-def load_clean_data(ticker, p):
+# BIST DÜNKÜ KAPANIŞ VE ANLIK FİYAT HESAPLAMA MOTORU
+@st.cache_data(ttl=60)
+def get_bist_live_snapshot(symbol):
     try:
-        t = yf.Ticker(ticker)
-        df = t.history(period=p, interval="1d", auto_adjust=True)
-        if df.empty or len(df) < 2:
-            df = yf.download(ticker, period=p, interval="1d", auto_adjust=True, progress=False)
-
-        if not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df.dropna(subset=['Close'])
-            for col in ['Open', 'High', 'Low']:
-                if col not in df.columns:
-                    df[col] = df['Close']
-            return df
+        t = yf.Ticker(symbol)
+        fi = getattr(t, 'fast_info', None)
+        if fi:
+            last_p = fi.get('lastPrice', None) or fi.get('last_price', None)
+            prev_p = fi.get('previousClose', None) or fi.get('previous_close', None)
+            if last_p and prev_p and prev_p > 0:
+                change_amount = float(last_p) - float(prev_p)
+                change_pct = (change_amount / float(prev_p)) * 100
+                return float(last_p), float(prev_p), float(change_pct), float(change_amount)
     except Exception:
         pass
+    return None, None, None, None
+
+# CANLI GRAM ALTIN MOTORU
+@st.cache_data(ttl=60)
+def get_live_gram_altin(fallback_price=None):
+    try:
+        url = "https://api.genelpara.com/embed/altin.json"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            ga = data.get("GA", {})
+            alis = float(str(ga.get("alis", "0")).replace(",", "."))
+            satis = float(str(ga.get("satis", "0")).replace(",", "."))
+            degisim = float(str(ga.get("degisim", "0")).replace(",", "."))
+            if alis > 1000 and satis > 1000:
+                return {"alis": alis, "satis": satis, "makas": satis - alis, "degisim": degisim}
+    except Exception:
+        pass
+
+    if fallback_price and fallback_price > 0:
+        return {
+            "alis": round(fallback_price * 0.995, 2),
+            "satis": round(fallback_price * 1.005, 2),
+            "makas": round(fallback_price * 0.01, 2),
+            "degisim": 0.0
+        }
+    return None
+
+# GEÇMİŞ ZAMAN SERİSİ MOTORU
+@st.cache_data(ttl=600)
+def load_clean_data(ticker, p):
+    df = pd.DataFrame()
+    try:
+        df = yf.download(ticker, period=p, interval="1d", auto_adjust=True, progress=False)
+    except Exception:
+        pass
+
+    if df.empty or len(df) < 2:
+        try:
+            t = yf.Ticker(ticker)
+            df = t.history(period=p, interval="1d", auto_adjust=True)
+        except Exception:
+            pass
+
+    if not df.empty:
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.loc[:, ~df.columns.duplicated()]
+
+        if hasattr(df.index, 'tz') and df.index.tz is not None:
+            df.index = df.index.tz_localize(None)
+        df.index = pd.to_datetime(df.index).floor('D')
+
+        df = df.dropna(subset=['Close'])
+        for col in ['Open', 'High', 'Low']:
+            if col not in df.columns:
+                df[col] = df['Close']
+        return df
+    return pd.DataFrame()
+
+# GRAM ALTIN ZAMAN SERİSİ
+@st.cache_data(ttl=600)
+def get_gram_altin_data(period):
+    df_ons = load_clean_data("GC=F", period)
+    df_usd = load_clean_data("USDTRY=X", period)
+
+    if not df_ons.empty and not df_usd.empty:
+        all_dates = df_ons.index.union(df_usd.index).sort_values()
+        ons_c = df_ons['Close'].reindex(all_dates).ffill().bfill()
+        usd_c = df_usd['Close'].reindex(all_dates).ffill().bfill()
+        ons_o = df_ons['Open'].reindex(all_dates).ffill().bfill()
+        usd_o = df_usd['Open'].reindex(all_dates).ffill().bfill()
+        ons_h = df_ons['High'].reindex(all_dates).ffill().bfill()
+        usd_h = df_usd['High'].reindex(all_dates).ffill().bfill()
+        ons_l = df_ons['Low'].reindex(all_dates).ffill().bfill()
+        usd_l = df_usd['Low'].reindex(all_dates).ffill().bfill()
+
+        df_gram = pd.DataFrame(index=all_dates)
+        df_gram['Close'] = (ons_c * usd_c) / 31.1035
+        df_gram['Open'] = (ons_o * usd_o) / 31.1035
+        df_gram['High'] = (ons_h * usd_h) / 31.1035
+        df_gram['Low'] = (ons_l * usd_l) / 31.1035
+        return df_gram.dropna()
     return pd.DataFrame()
 
 @st.cache_data(ttl=900)
@@ -90,7 +171,7 @@ def format_val(val, prefix="", suffix="", multiplier=1.0, precision=2):
         return "-"
     return f"{prefix}{val * multiplier:.{precision}f}{suffix}"
 
-# --- MENÜ SEÇİMİ ---
+# --- SOL MENÜ ---
 st.sidebar.header("🧭 Menü Seçimi")
 page_mode = st.sidebar.radio(
     "Sayfa:",
@@ -102,76 +183,41 @@ page_mode = st.sidebar.radio(
     index=0
 )
 
-# ==========================================
-# 1. MOD: GENEL BİLGİ & FİNANSAL KILAVUZ (TAM KAPSAMLI)
-# ==========================================
+# 1. MOD: GENEL BİLGİ & FİNANSAL KILAVUZ
 if page_mode == "📖 Genel Bilgi & Finansal Kılavuz":
     st.subheader("📖 Finansal Okuryazarlık, Temel Göstergeler & Yatırımcı Kılavuzu")
-    st.caption("Paneldeki tüm analitik göstergelerin finansal mantığı, ideal referans aralıkları ve pratik kullanım kuralları:")
+    st.caption("Paneldeki tüm göstergelerin Borsa İstanbul hesaplama mantığı:")
 
     col1, col2 = st.columns(2)
-
     with col1:
-        st.markdown("### 1. 💵 Getiri ve Enflasyon Dinamikleri")
+        st.markdown("### 1. 💵 Günlük Değişim ve Getiri Kuralları")
         st.markdown("""
-        * **Nominal Getiri:** Paranın sadece etiket/sayısal büyümesidir. Örneğin 100.000 TL paranız 1 yıl sonunda 130.000 TL olduğunda nominal getiri **%30**'dur.
-        * **Reel Getiri (Satın Alma Gücü Kazanımı):** Paranın mal ve hizmet sepeti karşısındaki net güç artışıdır. Finans literatüründe **Fisher Formülü** ile hesaplanır:
+        * **Resmi BIST Günlük Fark:** Anlık son fiyat ile dünkü resmi kapanış (uzlaşma) arasındaki net TL tutarı ve yüzdesel orandır:
+          $$\\Delta \\text{TL} = \\text{Son Fiyat} - \\text{Dünkü Kapanış}$$
+          $$\\text{Günlük Değişim (\\%)} = \\frac{\\Delta \\text{TL}}{\\text{Dünkü Kapanış}} \\times 100$$
+        * **Reel Getiri (Fisher Formülü):** Enflasyondan arındırılmış satın alma gücü artışıdır:
           $$\\text{Reel Getiri} = \\frac{1 + \\text{Nominal Getiri}}{1 + \\text{Enflasyon}} - 1$$
-        * **Yatırımcı Kuralı:** Nominal kazanç psikolojik bir yanılsama olabilir; portföyü büyüten tek faktör enflasyonun üzerindeki **pozitif reel getiri**dir.
         """)
-
         st.markdown("### 2. 📊 Şirket Değerleme Çarpanları")
         st.markdown("""
-        * **F/K (Fiyat / Kazanç Oranı):** 
-          * *Anlamı:* Şirketin hisse fiyatının, hisse başına yıllık net kârına oranıdır. *"Şirket bugünkü kâr performansıyla piyasa değerini kaç yılda amorti eder?"* sorusunun yanıtıdır.
-          * *İdeal Aralık:* BIST sanayi şirketlerinde **5 – 12** aralığı makul kabul edilir. Sektör ortalamasından belirgin düşük olması iskontoya işaret eder.
-        * **İleri Dönem F/K (Forward P/E):** Gelecek 12 ayın kâr tahminleriyle hesaplanan F/K'dır. Mevcut F/K'dan düşükse şirketin kârını büyüteceği bekleniyor demektir.
-        * **PD/DD (Piyasa Değeri / Defter Değeri):**
-          * *Anlamı:* Şirketin borsadaki toplam değerinin, bilançosundaki net özkaynaklarına (tüm varlıklar - borçlar) oranıdır.
-          * *İdeal Aralık:* **1.0 – 3.0** bandı dengeli sayılır. 1'in altı şirketin fabrikaları ve varlıklarının piyasada iskonto gördüğünü ifade eder.
-        * **Temettü Verimi (%):** Şirketin elde ettiği kârdan hisse başına dağıttığı nakit kâr payının hisse fiyatına oranıdır. %5 ve üzeri verim düzenli pasif gelir sağlar.
+        * **F/K (Fiyat / Kazanç):** 5–12 ideal amortisman bandı.
+        * **PD/DD (Piyasa/Defter):** 1–3 dengeli özkaynak çarpanı.
+        * **Temettü Verimi (%):** Yıllık nakit kâr payı oranı.
         """)
-
-        st.markdown("### 3. 🥇 Emtia, Döviz ve BIST Endeksleri")
-        st.markdown("""
-        * **Gram Altın (TL) Formülü:**
-          $$\\text{Gram Altın (TL)} = \\frac{\\text{Ons Altın (USD)} \\times \\text{USD/TRY}}{31{,}1035}$$
-          Hem ons fiyatından hem de Dolar kurundan beslendiği için çifte koruma (hedge) sağlar.
-        * **BIST 100 Endeksi (XU100):** Borsa İstanbul'da işlem gören en yüksek piyasa değerine ve işlem hacmine sahip 100 şirketin ağırlıklı performans göstergesidir.
-        """)
-
     with col2:
-        st.markdown("### 4. 🏢 Bilanço Sağlığı ve Kârlılık Gücü")
+        st.markdown("### 3. 🏢 Bilanço Sağlığı ve Kârlılık")
         st.markdown("""
-        * **Özsermaye Kârlılığı (ROE - Return on Equity):**
-          * *Anlamı:* Şirket ortaklarının koyduğu her 100 TL özkaynak ile yıl sonunda ne kadar net kâr üretildiğidir.
-          * *Kritik Kural:* ROE mutlaka yıllık enflasyon oranından (%31,75) yüksek olmalıdır. Aksi halde şirket reel olarak erir.
-        * **Net Kâr Marjı (%):** Şirketin kasasına giren her 100 TL cironun kaç TL'sinin kâr olarak kaldığıdır. Fiyatlama gücünü gösterir.
-        * **Borç / Özkaynak Oranı (%):** Şirketin toplam finansal borçlarının özkaynaklara oranıdır. Yüksek faiz dönemlerinde **%150'nin altı** güvenli limandır.
-        * **Likit Oran (Quick Ratio / Asit-Test):** Şirketin stoklarını satmasına gerek kalmadan, kasadaki nakit ve alacaklarıyla kısa vadeli borçlarını ödeyebilme gücüdür (**$\ge 1.0$ idealdir**).
+        * **Özsermaye Kârı (ROE):** Sermayenin kâr üretme gücü (Enflasyonun üzerinde olmalı).
+        * **Net Kâr Marjı (%):** Cironun kâra dönüşme oranı.
+        * **Borç / Özkaynak (%):** %50–%150 güvenli borç seviyesi.
+        """)
+        st.markdown("### 4. 📈 Teknik Analiz")
+        st.markdown("""
+        * **RSI (14):** 30 altı aşırı satım (fırsat), 70 üstü aşırı alım (düzeltme riski).
+        * **SMA 20 & 50:** Fiyat ortalamaların üzerindeyse trend pozitiftir.
         """)
 
-        st.markdown("### 5. 📈 Teknik Analiz ve Momentum")
-        st.markdown("""
-        * **RSI (14 - Göreceli Güç Endeksi):** 0-100 arasında momentumu ölçer.
-          * **30'un Altı (Aşırı Satım):** Satışlar panik boyutuna ulaşmış, fiyat aşırı ucuzlamış olabilir (Tepki yükselişi potansiyeli).
-          * **50 – 65 Arası:** Sağlıklı ve dengeli boğa yükseliş trendi.
-          * **70'in Üstü (Aşırı Alım):** Coşku aşırı artmış, kâr satışı ve düzeltme riski yükselmiştir.
-        * **SMA 20 ve SMA 50 (Hareketli Ortalamalar):**
-          * Fiyat ortalamaların üzerindeyse trend yukarıdır.
-          * **Golden Cross (Altın Kesişme):** Kısa vadeli ortalamanın uzun vadeli ortalamayı yukarı kesmesi güçlü boğa rallisini işaret eder.
-        """)
-
-        st.markdown("### 6. 🛡️ Portföy Mimarisi (Savunma vs. Hücum)")
-        st.markdown("""
-        * **Savunma & Likidite (KPI - Katılım Para Piyasası Fonu):** Değeri düşmeyen, her gün istikrarlı getiri yazan acil durum ve fırsat nakdidir.
-        * **Dengeleyici & Sukuk (IAT - Kira Sertifikaları Fonu):** Düzenli faizsiz kira geliri akışı sağlar, dalgalanmayı düşürür.
-        * **Hücum & Büyüme (BIST Hisseleri - FROTO, TUPRS, ASELS vb.):** İhracat, kapasite artışı ve temettüyle enflasyonu uzun vadede katlayan ana büyüme motorudur.
-        """)
-
-# ==========================================
 # 2. MOD: TOPLU KARŞILAŞTIRMA TABLOSU
-# ==========================================
 elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     st.subheader("📑 Takip Listesindeki Şirketlerin Karşılaştırmalı Performans Tablosu")
     
@@ -179,18 +225,21 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     yillik_enf = st.sidebar.number_input("Yıllık Enflasyon (TÜFE %)", value=TUIK_YILLIK_ENFLASYON, step=0.5)
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, comp_period)
     
-    st.caption(f"Seçilen Dönem: **{comp_period} ({ay_sayisi} Aylık)** | Dönem Enflasyonu: **%{donem_enf:.2f}**")
+    st.caption(f"Hesaplama: **Dünkü Kapanışa Göre BIST Değişimi** | Seçilen Dönem: **{comp_period} ({ay_sayisi} Aylık)** | Enflasyon: **%{donem_enf:.2f}**")
 
     summary_rows = []
-    with st.spinner("Şirket verileri hesaplanıyor..."):
+    with st.spinner("Şirket verileri BIST formülüyle hesaplanıyor..."):
         for name, ticker in STOCKS_ONLY.items():
             df_hist = load_clean_data(ticker, "1y")
             info = get_fundamental_data(ticker)
+            live_last, live_prev, live_change, live_diff = get_bist_live_snapshot(ticker)
 
             if not df_hist.empty and len(df_hist) >= 2:
-                last_p = float(df_hist['Close'].iloc[-1])
-                prev_p = float(df_hist['Close'].iloc[-2])
-                daily_c = ((last_p - prev_p) / prev_p) * 100
+                last_p = live_last if live_last is not None else float(df_hist['Close'].iloc[-1])
+                prev_close = live_prev if live_prev is not None else float(df_hist['Close'].iloc[-2])
+                
+                diff_amount = live_diff if live_diff is not None else (last_p - prev_close)
+                daily_c = live_change if live_change is not None else ((diff_amount / prev_close) * 100)
 
                 df_period = load_clean_data(ticker, comp_period)
                 if not df_period.empty and len(df_period) >= 1:
@@ -214,7 +263,7 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
                     "Hisse": name.split(" ")[0],
                     "Şirket": name.split("(")[1].replace(")", ""),
                     "Son Fiyat": f"{last_p:.2f} TL",
-                    "Günlük Fark": f"%{daily_c:+.2f}",
+                    "Günlük Fark (BIST)": f"{diff_amount:+.2f} TL (%{daily_c:+.2f})",
                     f"Nominal ({comp_period})": f"%{nom_ret:+.2f}",
                     f"Reel ({comp_period})": f"%{reel_ret:+.2f}",
                     "Zirve İskonto": f"%{zirve_iskonto:.1f}",
@@ -230,13 +279,11 @@ elif page_mode == "📑 Tüm Hisselerin Özeti (Karşılaştırma)":
     else:
         st.error("Veriler yüklenemedi. Lütfen sayfayı yenileyiniz.")
 
-# ==========================================
 # 3. MOD: TEKİL DETAY SAYFASI
-# ==========================================
 else:
     st.sidebar.markdown("---")
     st.sidebar.subheader("Piyasa ve Fon Seçimi")
-    selected_label = st.sidebar.selectbox("Takip Listesi:", list(WATCHLIST.keys()), index=0)
+    selected_label = st.sidebar.selectbox("Takip Listesi:", list(WATCHLIST.keys()), index=5)
     selected_item = WATCHLIST[selected_label]
 
     if selected_item["type"] != "fund":
@@ -251,23 +298,26 @@ else:
     donem_enf, ay_sayisi = get_period_inflation(yillik_enf, period)
     st.sidebar.metric(label=f"Seçilen Dönem Enflasyonu ({period} - {ay_sayisi} Aylık)", value=f"%{donem_enf:.2f}")
 
-    # FONLAR (KPI & IAT)
+    # FONLAR
     if selected_item["type"] == "fund":
         st.subheader(f"🏷️ {selected_label}")
         fon_yillik = selected_item["yillik_getiri"]
+        fon_gunluk = ((1 + (fon_yillik / 100)) ** (1 / 365) - 1) * 100
+        fon_aylik = ((1 + (fon_yillik / 100)) ** (1 / 12) - 1) * 100
         fon_reel = ((1 + (fon_yillik / 100)) / (1 + (yillik_enf / 100)) - 1) * 100
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Fon Kodu", selected_item["ticker"])
-        c2.metric("Yıllık Getiri (Brüt)", f"%{fon_yillik:.2f}")
-        c3.metric("Yıllık Enflasyon", f"%{yillik_enf:.2f}")
-        c4.metric(label="Yıllık Reel Getiri", value=f"%{fon_reel:+.2f}", delta=f"{fon_reel:+.2f}% Reel Kazanç")
+        c2.metric("Günlük Getiri", f"%{fon_gunluk:.4f}")
+        c3.metric("Aylık Getiri", f"%{fon_aylik:.2f}")
+        c4.metric("Yıllık Brüt", f"%{fon_yillik:.2f}")
+        c5.metric(label="Yıllık Reel Getiri", value=f"%{fon_reel:+.2f}", delta=f"{fon_reel:+.2f}% Reel Kazanç")
 
         st.info(f"""
         **{selected_item['fon_adi']} Özeti:**
-        * **Yönetici:** İş Portföy Yönetimi A.Ş.
-        * **Getiri Tipi:** {'Faizsiz Katılım Para Piyasası (Likit TL)' if selected_item['ticker'] == 'KPI' else 'Kira Sertifikaları Katılım (Sukuk TL)'}
-        * **İşlem:** TEFAS üzerinden tüm bankalardan alınıp satılabilir.
+        * **Portföy Yöneticisi:** İş Portföy Yönetimi A.Ş.
+        * **Fon Türü:** {'Katılım Para Piyasası (Faizsiz Likit TL)' if selected_item['ticker'] == 'KPI' else 'Kira Sertifikaları Katılım (Sukuk TL)'}
+        * **İşlem:** TEFAS üzerinden tüm bankalardan valörsüz alınıp satılabilir.
         """)
 
     # HİSSE, GRAM ALTIN, ONS, BIST 100, DÖVİZ
@@ -284,43 +334,56 @@ else:
         with tab1:
             with st.spinner("Piyasa verileri yükleniyor..."):
                 if selected_item["type"] == "gram_altin":
-                    df_ons = load_clean_data("GC=F", period)
-                    df_usd = load_clean_data("USDTRY=X", period)
-                    if not df_ons.empty and not df_usd.empty:
-                        common_index = df_ons.index.intersection(df_usd.index)
-                        data = pd.DataFrame(index=common_index)
-                        for col in ['Open', 'High', 'Low', 'Close']:
-                            data[col] = (df_ons.loc[common_index, col] * df_usd.loc[common_index, col]) / 31.1035
-                        data = data.dropna()
-                    else:
-                        data = pd.DataFrame()
+                    data = get_gram_altin_data(period)
+                    live_last, live_prev, live_diff = None, None, None
                 else:
                     data = load_clean_data(symbol, period)
+                    live_last, live_prev, _, live_diff = get_bist_live_snapshot(symbol)
 
             if data.empty or len(data) < 2:
-                st.error("Veri alınamadı. Lütfen sembolün doğruluğunu kontrol ediniz.")
+                st.error("Seçilen varlık için canlı veri çekilemedi.")
             else:
                 data['SMA20'] = SMAIndicator(close=data['Close'], window=min(20, len(data))).sma_indicator()
                 data['SMA50'] = SMAIndicator(close=data['Close'], window=min(50, len(data))).sma_indicator()
                 data['RSI'] = RSIIndicator(close=data['Close'], window=min(14, len(data))).rsi()
 
                 start_p = float(data['Close'].iloc[0])
-                last_p = float(data['Close'].iloc[-1])
-                prev_p = float(data['Close'].iloc[-2])
-                daily_c = ((last_p - prev_p) / prev_p) * 100
+                last_p = live_last if live_last is not None else float(data['Close'].iloc[-1])
+                prev_close = live_prev if live_prev is not None else float(data['Close'].iloc[-2])
+                
+                # DÜNKÜ KAPANIŞA GÖRE TL VE YÜZDE FARKI
+                diff_amount = live_diff if live_diff is not None else (last_p - prev_close)
+                daily_c = ((last_p - prev_close) / prev_close) * 100
                 period_r = ((last_p - start_p) / start_p) * 100
                 last_rsi = float(data['RSI'].iloc[-1]) if pd.notnull(data['RSI'].iloc[-1]) else 50.0
                 reel_r = ((1 + (period_r / 100)) / (1 + (donem_enf / 100)) - 1) * 100
 
                 st.subheader(f"📈 {selected_label}")
-                c1, c2, c3, c4, c5 = st.columns(5)
+
                 birim = "Puan" if symbol == "XU100.IS" else ("TL" if "TL" in selected_label or ".IS" in symbol or selected_item["type"] == "gram_altin" else "$")
-                c1.metric("Son Değer", f"{last_p:.2f} {birim}", f"{daily_c:+.2f}% Günlük")
-                c2.metric(f"Nominal ({period})", f"%{period_r:+.2f}")
-                c3.metric(f"{ay_sayisi} Aylık Enflasyon", f"%{donem_enf:.2f}")
-                c4.metric(label=f"Reel ({period})", value=f"%{reel_r:+.2f}", delta=f"{reel_r:+.2f}% Reel Fark")
-                rsi_durum = "Aşırı Alım" if last_rsi > 70 else ("Aşırı Satım" if last_rsi < 30 else "Nötr")
-                c5.metric("RSI (14)", f"{last_rsi:.2f}", rsi_durum)
+
+                if selected_item["type"] == "gram_altin":
+                    live_gold = get_live_gram_altin(last_p)
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    if live_gold:
+                        c1.metric("Canlı Alış", f"{live_gold['alis']:.2f} TL")
+                        c2.metric("Canlı Satış", f"{live_gold['satis']:.2f} TL", f"{diff_amount:+.2f} TL (%{daily_c:+.2f})")
+                        c3.metric("Alış-Satış Makası", f"{live_gold['makas']:.2f} TL")
+                    else:
+                        c1.metric("Son Değer", f"{last_p:.2f} TL", f"{diff_amount:+.2f} TL (%{daily_c:+.2f})")
+                        c2.metric("Nominal Getiri", f"%{period_r:+.2f}")
+                        c3.metric("Dönem Enflasyonu", f"%{donem_enf:.2f}")
+
+                    c4.metric(f"Nominal ({period})", f"%{period_r:+.2f}")
+                    c5.metric(label=f"Reel ({period})", value=f"%{reel_r:+.2f}", delta=f"{reel_r:+.2f}% Reel Fark")
+                else:
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    c1.metric("Son Değer", f"{last_p:.2f} {birim}", f"{diff_amount:+.2f} {birim} (%{daily_c:+.2f})")
+                    c2.metric(f"Nominal Getiri ({period})", f"%{period_r:+.2f}")
+                    c3.metric(f"{ay_sayisi} Aylık Enflasyon", f"%{donem_enf:.2f}")
+                    c4.metric(label=f"Reel Getiri ({period})", value=f"%{reel_r:+.2f}", delta=f"{reel_r:+.2f}% Reel Kazanç/Kayıp")
+                    rsi_durum = "Aşırı Alım" if last_rsi > 70 else ("Aşırı Satım" if last_rsi < 30 else "Nötr")
+                    c5.metric("RSI (14)", f"{last_rsi:.2f}", rsi_durum)
 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="Fiyat"))
